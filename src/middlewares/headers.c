@@ -7,22 +7,23 @@
 bool verify_upload_checksum(struct mg_http_message *hm, char *hash_type,
 			    size_t type_len, char *hash, size_t hash_size) {
 	struct mg_str *up_cksum = mg_http_get_header(hm, "Upload-Checksum");
-	if ((up_cksum->len - 8) >= hash_size || !up_cksum || type_len < 7)
+	if (!up_cksum || type_len == 0 || hash_size == 0)
 		return false;
 
-	if (up_cksum->len >= 7 && strncmp(up_cksum->buf, "blake3 ", 7) == 0) {
+	if (up_cksum->len >= 7 && strncmp(up_cksum->buf, "blake3 ", 7) == 0 &&
+	    (up_cksum->len - 7 < hash_size) && type_len > 7) {
 		memcpy(hash, up_cksum->buf + 7, up_cksum->len - 7);
 		hash[up_cksum->len - 7] = '\0';
-		strncpy(hash_type, "blake3", type_len);
-		hash_type[strlen("blake3")] = '\0';
+		snprintf(hash_type, type_len, "blake3");
 	} else if (up_cksum->len >= 5 &&
-		   strncmp(up_cksum->buf, "sha1 ", 5) == 0) {
+		   strncmp(up_cksum->buf, "sha1 ", 5) == 0 &&
+		   (up_cksum->len - 5 < hash_size) && type_len > 5) {
 		memcpy(hash, up_cksum->buf + 5, up_cksum->len - 5);
 		hash[up_cksum->len - 5] = '\0';
-		strncpy(hash_type, "sha1", type_len);
-		hash_type[strlen("sha1")] = '\0';
-	} else
+		snprintf(hash_type, type_len, "sha1");
+	} else {
 		return false;
+	}
 
 	return true;
 }
@@ -58,11 +59,64 @@ bool verify_tus_resumable(struct mg_http_message *hm) {
 	return false;
 }
 
-bool verify_post(struct mg_connection *c, struct mg_http_message *hm,
-		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
-		 size_t *up_len) {
+bool verify_headers_post(struct mg_http_message *hm, char *hash,
+			 size_t hash_size, char *hash_type, size_t type_len,
+			 size_t *up_len) {
 	if (!verify_upload_checksum(hm, hash_type, type_len, hash, hash_size) ||
 	    !verify_tus_resumable(hm) || !verify_upload_length(hm, up_len))
+		return false;
+
+	return true;
+}
+
+bool compare_checksum(struct mg_http_message *hm, const char *hash,
+		      size_t hash_len) {
+	struct mg_str *up_cksum = mg_http_get_header(hm, "Upload-Checksum");
+	char hash_aux[128] = { 0 };
+	size_t prefix_len = 0;
+
+	if (!up_cksum)
+		return false;
+
+	if (up_cksum->len >= 7 && strncmp(up_cksum->buf, "blake3 ", 7) == 0) {
+		prefix_len = 7;
+	} else if (up_cksum->len >= 5 &&
+		   strncmp(up_cksum->buf, "sha1 ", 5) == 0) {
+		prefix_len = 5;
+	} else {
+		return false;
+	}
+
+	if ((up_cksum->len - prefix_len) != hash_len)
+		return false;
+
+	memcpy(hash_aux, up_cksum->buf + prefix_len,
+	       up_cksum->len - prefix_len);
+	hash_aux[up_cksum->len - prefix_len] = '\0';
+
+	return strncmp(hash, hash_aux, hash_len) == 0;
+}
+
+bool verify_content_type(struct mg_http_message *hm) {
+	struct mg_str *ct = mg_http_get_header(hm, "Content-Type");
+	const char expected[] = "application/offset+octet-stream";
+	if (!ct)
+		return false;
+
+	// Verifica se começa com a string esperada
+	if (ct->len != strlen(expected))
+		return false;
+
+	if (strncmp(ct->buf, expected, strlen(expected)) != 0)
+		return false;
+
+	return true;
+}
+
+bool verify_headers_patch(struct mg_http_message *hm, char *hash,
+			  size_t hash_size) {
+	if (!compare_checksum(hm, hash, strnlen(hash, hash_size)) ||
+	    !verify_tus_resumable(hm) || !verify_content_type(hm))
 		return false;
 
 	return true;

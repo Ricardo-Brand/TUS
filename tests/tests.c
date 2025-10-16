@@ -18,12 +18,11 @@ static const uint64_t s_timeout_ms = 1500; // Connect timeout in milliseconds
 static const char *s_headers = NULL;
 static char s_token[80] = { 0 };
 static struct mg_http_message *s_response = NULL;
+static char s_location[65] = { 0 };
 static char s_checksum[65] = { 0 };
 
 typedef enum {
 	JSON_EXPECT_STRING,
-	JSON_EXPECT_NUMBER,
-	JSON_EXPECT_EMPTY_ARRAY
 } ExpectedJsonType;
 
 typedef struct {
@@ -102,7 +101,8 @@ static bool request(struct mg_mgr *mgr, struct mg_http_message *msg,
 }
 
 bool upload(struct mg_mgr *mgr, struct mg_http_message *message,
-	    const char *image_bytes, size_t image_len, const char *endpoint) {
+	    const char *image_bytes, size_t image_len, char *type_checksum,
+	    const char *endpoint) {
 	if (!image_bytes || !endpoint || !message || image_len == 0)
 		return false;
 
@@ -119,15 +119,15 @@ bool upload(struct mg_mgr *mgr, struct mg_http_message *message,
 		char headers[256] = { 0 };
 		snprintf(
 			headers, sizeof(headers),
-			"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\n",
-			offset);
+			"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: %s %s\r\n",
+			offset, type_checksum, s_checksum);
 
 		chunk_size = (image_len - offset > CHUNK_SIZE) ?
 				     CHUNK_SIZE :
 				     image_len - offset;
 
 		snprintf(query_url, sizeof(query_url), "%s/%s", endpoint,
-			 s_checksum);
+			 s_location);
 
 		if (!request(mgr, message, query_url, headers,
 			     image_bytes + offset, chunk_size)) {
@@ -234,21 +234,10 @@ bool verify_json(struct mg_http_message *message, JsonFieldCheck *fields,
 		memcpy(buffer, message->body.buf + offset, toklen);
 		buffer[toklen] = '\0';
 
-		// Verifica o tipo esperado
-		switch (fields[i].type) {
-		case JSON_EXPECT_STRING:
-			type_str = mg_json_get_str(json, fields[i].field);
-			break;
-		case JSON_EXPECT_NUMBER:
-			type_num = mg_json_get_num(json, fields[i].field, NULL);
-			break;
-		case JSON_EXPECT_EMPTY_ARRAY:
-			j = json_loads(json.buf, json.len, NULL);
-			if (json_is_array(j) && json_array_size(j) == 0) {
-				return true;
-			}
+		if(fields[i].type != JSON_EXPECT_STRING)
 			return false;
-		}
+		
+		type_str = mg_json_get_str(json, fields[i].field);
 
 		if (type_num == false && type_str == NULL) {
 			return false;
@@ -379,6 +368,8 @@ static bool test_image_post_blake3_banette_success(struct mg_mgr *mgr) {
 		headers, sizeof(headers),
 		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
 		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
 	memset(s_method, 0, sizeof(s_method));
 	snprintf(s_method, sizeof(s_method), "POST");
 
@@ -394,16 +385,16 @@ static bool test_image_post_blake3_banette_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	memset(s_checksum, 0, sizeof(s_checksum));
-	strncpy(s_checksum, location, sizeof(s_checksum) - 1);
+	memset(s_location, 0, sizeof(s_location));
+	strncpy(s_location, location, sizeof(s_location) - 1);
 
-	if (s_checksum[0] == '\0' || id_len >= sizeof(s_checksum) ||
+	if (s_location[0] == '\0' || id_len >= sizeof(s_location) ||
 	    mg_http_status(&message) != 201) {
 		status = false;
 		goto end;
 	}
 
-	s_checksum[id_len] = '\0';
+	s_location[id_len] = '\0';
 end:
 	if (image_bytes != NULL) {
 		free(image_bytes);
@@ -429,7 +420,7 @@ static bool test_image_patch_blake3_banette_success(struct mg_mgr *mgr) {
 		return false;
 	}
 
-	if (!upload(mgr, &message, image_bytes, size, "/files")) {
+	if (!upload(mgr, &message, image_bytes, size, "blake3", "/files")) {
 		status = false;
 		goto end;
 	}
@@ -484,6 +475,8 @@ static bool test_image_post_blake3_scrafty_success(struct mg_mgr *mgr) {
 		headers, sizeof(headers),
 		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
 		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
 	memset(s_method, 0, sizeof(s_method));
 	snprintf(s_method, sizeof(s_method), "POST");
 
@@ -499,10 +492,10 @@ static bool test_image_post_blake3_scrafty_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	memset(s_checksum, 0, sizeof(s_checksum));
-	strncpy(s_checksum, location, sizeof(s_checksum) - 1);
+	memset(s_location, 0, sizeof(s_location));
+	strncpy(s_location, location, sizeof(s_location) - 1);
 
-	if (s_checksum[0] == '\0' || id_len >= sizeof(s_checksum)) {
+	if (s_location[0] == '\0' || id_len >= sizeof(s_location)) {
 		status = false;
 		goto end;
 	}
@@ -512,7 +505,7 @@ static bool test_image_post_blake3_scrafty_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	s_checksum[id_len] = '\0';
+	s_location[id_len] = '\0';
 end:
 	if (image_bytes != NULL) {
 		free(image_bytes);
@@ -525,8 +518,10 @@ end:
 static bool test_image_patch_blake3_scrafty_failure(struct mg_mgr *mgr) {
 	struct mg_http_message message;
 	char *image_bytes;
-	size_t size;
+	size_t size, num;
 	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Arquivo é diferente\"",
+				     JSON_EXPECT_STRING } };
 
 	// Inicialização das variáveis
 	image_bytes = NULL;
@@ -544,12 +539,22 @@ static bool test_image_patch_blake3_scrafty_failure(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	if (!upload(mgr, &message, image_bytes, size, "/files")) {
+	if (!upload(mgr, &message, image_bytes, size, "blake3", "/files")) {
 		status = false;
 		goto end;
 	}
 
+	if (!verify_headers(&message)) {
+		return false;
+	}
+
 	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
 		status = false;
 		goto end;
 	}
@@ -595,6 +600,8 @@ static bool test_image_post_sha1_shuppet_success(struct mg_mgr *mgr) {
 		headers, sizeof(headers),
 		"Upload-Checksum: sha1 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
 		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
 	memset(s_method, 0, sizeof(s_method));
 	snprintf(s_method, sizeof(s_method), "POST");
 
@@ -610,16 +617,16 @@ static bool test_image_post_sha1_shuppet_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	memset(s_checksum, 0, sizeof(s_checksum));
-	strncpy(s_checksum, location, sizeof(s_checksum) - 1);
+	memset(s_location, 0, sizeof(s_location));
+	strncpy(s_location, location, sizeof(s_location) - 1);
 
-	if (s_checksum[0] == '\0' || id_len >= sizeof(s_checksum) ||
+	if (s_location[0] == '\0' || id_len >= sizeof(s_location) ||
 	    mg_http_status(&message) != 201) {
 		status = false;
 		goto end;
 	}
 
-	s_checksum[id_len] = '\0';
+	s_location[id_len] = '\0';
 end:
 	if (image_bytes != NULL) {
 		free(image_bytes);
@@ -645,7 +652,7 @@ static bool test_image_patch_sha1_shuppet_success(struct mg_mgr *mgr) {
 		return false;
 	}
 
-	if (!upload(mgr, &message, image_bytes, size, "/files")) {
+	if (!upload(mgr, &message, image_bytes, size, "sha1", "/files")) {
 		status = false;
 		goto end;
 	}
@@ -700,6 +707,8 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 		headers, sizeof(headers),
 		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
 		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
 	memset(s_method, 0, sizeof(s_method));
 	snprintf(s_method, sizeof(s_method), "POST");
 
@@ -715,10 +724,10 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	memset(s_checksum, 0, sizeof(s_checksum));
-	strncpy(s_checksum, location, sizeof(s_checksum) - 1);
+	memset(s_location, 0, sizeof(s_location));
+	strncpy(s_location, location, sizeof(s_location) - 1);
 
-	if (s_checksum[0] == '\0' || id_len >= sizeof(s_checksum)) {
+	if (s_location[0] == '\0' || id_len >= sizeof(s_location)) {
 		status = false;
 		goto end;
 	}
@@ -728,7 +737,7 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	s_checksum[id_len] = '\0';
+	s_location[id_len] = '\0';
 end:
 	if (image_bytes != NULL) {
 		free(image_bytes);
@@ -741,8 +750,10 @@ end:
 static bool test_image_patch_sha1_claydol_failure(struct mg_mgr *mgr) {
 	struct mg_http_message message;
 	char *image_bytes;
-	size_t size;
+	size_t size, num;
 	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Arquivo é diferente\"",
+				     JSON_EXPECT_STRING } };
 
 	// Inicialização das variáveis
 	image_bytes = NULL;
@@ -760,12 +771,22 @@ static bool test_image_patch_sha1_claydol_failure(struct mg_mgr *mgr) {
 		goto end;
 	}
 
-	if (!upload(mgr, &message, image_bytes, size, "/files")) {
+	if (!upload(mgr, &message, image_bytes, size, "sha1", "/files")) {
 		status = false;
 		goto end;
 	}
 
+	if (!verify_headers(&message)) {
+		return false;
+	}
+
 	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
 		status = false;
 		goto end;
 	}

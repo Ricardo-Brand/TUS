@@ -22,11 +22,16 @@ static const char *DEFAULT_HEADERS =
 	"Access-Control-Allow-Headers: "
 	"DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-"
 	"Since,Cache-Control,Content-Type\r\n"
+    "Access-Control-Max-Age: 1728000\r\n"
+    "Vary: Origin, Access-Control-Request-Method, Access-Control-Request-Headers\r\n"
+    "Content-Type: application/json\r\n"
 	"Cache-Control: no-store\r\n";
 
-bool verify_post(struct mg_connection *c, struct mg_http_message *hm,
+bool verify_headers_post(struct mg_http_message *hm,
 		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
 		 size_t *up_len);
+
+bool verify_headers_patch(struct mg_http_message *hm, char *hash, size_t hash_size);
 
 bool get_tus_resumable(struct mg_http_message *hm, char *version, size_t version_len);
 

@@ -4,8 +4,8 @@
 #include "mongoose.h"
 
 typedef enum {
-    HASH_SHA1,
-    HASH_BLAKE3
+    HASH_SHA1 = 1,
+    HASH_BLAKE3 = 2,
 } HashType;
 
 typedef struct ArrayTus{

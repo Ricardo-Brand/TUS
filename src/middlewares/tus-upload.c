@@ -148,9 +148,9 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	char location[128], hash_type[10] = { 0 };
 	size_t len;
 
-	if (!verify_post(c, hm, up[*n_up].hash, sizeof(up[*n_up].hash),
-			 hash_type, sizeof(hash_type),
-			 &up[*n_up].upload_length)) {
+	if (!verify_headers_post(hm, up[*n_up].hash, sizeof(up[*n_up].hash),
+				 hash_type, sizeof(hash_type),
+				 &up[*n_up].upload_length)) {
 		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
 		return;
 	}
@@ -351,6 +351,11 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 		}
 	}
 
+	if (!verify_headers_patch(hm, up[i].hash, sizeof(up[i].hash))) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
+		return;
+	}
+
 	if (!verify_exp_time(up[i].date_time)) {
 		mg_http_reply(c, 400, DEFAULT_HEADERS, "Arquivo expirou");
 		return;
@@ -394,7 +399,8 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 	up[i].upload_offset += hm->body.len;
 	if (up[i].upload_offset == up[i].upload_length &&
 	    !verify_upload(&up[i])) {
-		mg_http_reply(c, 400, DEFAULT_HEADERS, "Arquivo é diferente");
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "\"Arquivo é diferente\"");
 		remove(up[i].url_image);
 		return;
 	}

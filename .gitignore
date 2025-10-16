@@ -1,2 +1,4 @@
-./tmp
-./build
+tmp/
+build/
+**/.DS_Store
+.vscode
