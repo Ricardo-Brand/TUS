@@ -10,14 +10,7 @@
 
 #define IMAGE_PATH_SIZE 512
 
-const char *DEFAULT_HEADERS =
-	"Access-Control-Allow-Origin: *\r\n"
-	"Access-Control-Allow-Credentials: true\r\n"
-	"Access-Control-Allow-Methods: GET,POST,OPTIONS\r\n"
-	"Access-Control-Allow-Headers: DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type\r\n"
-	"Cache-Control: no-store\r\n";
-
-// Pega o tempo atual
+// Pega o tempo atual e adiciona 5 minutos
 void get_gmt_date_plus_5min(char *buffer, size_t size) {
 	time_t now = time(NULL);
 	now += 5 * 60; // adiciona 5 minutos (em segundos)
@@ -25,7 +18,7 @@ void get_gmt_date_plus_5min(char *buffer, size_t size) {
 	strftime(buffer, size, "%a, %d %b %Y %H:%M:%S GMT", gmt);
 }
 
-// Pega o tempo atual e adiciona 5 minutos
+// Pega o tempo atual
 void get_gmt_date(char *buffer, size_t size) {
 	time_t now = time(NULL); // obtém o tempo atual (epoch)
 	struct tm *gmt = gmtime(&now); // converte para UTC (GMT)
@@ -39,21 +32,6 @@ time_t parse_http_date(const char *date_str) {
 		return (time_t)-1;
 	return timegm(&t); // converte tm (UTC) em time_t
 }
-
-// // Converte ambas as datas para time_t
-// time_t t_now = parse_http_date(date_now);
-// time_t t_plus5 = parse_http_date(date_plus5);
-
-// if (t_now == (time_t)-1 || t_plus5 == (time_t)-1) {
-//     printf("Erro ao converter data.\n");
-//     return 1;
-// }
-
-// // Compara
-// if (t_now > t_plus5)
-//     printf("✅ Já se passaram 5 minutos.\n");
-// else
-//     printf("⏳ Ainda não passaram 5 minutos.\n");
 
 /*
 *
@@ -201,7 +179,8 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	}
 
 	strncpy(up[*n_up].url_image, image_path, sizeof(up[*n_up].url_image));
-	get_gmt_date(up[*n_up].date_time, sizeof(up[*n_up].date_time));
+	get_gmt_date_plus_5min(up[*n_up].date_time,
+			       sizeof(up[*n_up].date_time));
 
 	if (strlen("http://127.0.0.1:8080/files/") +
 		    strnlen(b58, sizeof(b58)) >=
@@ -213,7 +192,6 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	snprintf(location, sizeof(location), "http://127.0.0.1:8080/files/%s",
 		 b58);
 
-	printf("location: %s\n", location);
 	if (!concat_header_post(post_headers, sizeof(post_headers), "Location",
 				location) ||
 	    !concat_header_post(post_headers, sizeof(post_headers),
@@ -227,7 +205,6 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	FILE *fp = fopen(image_path, "rb");
 	if (fp) {
 		fclose(fp);
-		(*n_up)++;
 		mg_http_reply(c, 201, post_headers, "");
 		return;
 	}
@@ -249,6 +226,70 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
     PATCH
 *
 */
+
+bool verify_exp_time(char *date_time) {
+	char date_now[65] = { 0 };
+	get_gmt_date(date_now, sizeof(date_now));
+	time_t t_now = parse_http_date(date_now);
+	time_t t_plus5 = parse_http_date(date_time);
+	if (t_now == (time_t)-1 || t_plus5 == (time_t)-1) {
+		return false;
+	}
+
+	return t_now < t_plus5;
+}
+
+bool get_hash(unsigned char *image_bytes, size_t image_len,
+	      unsigned char *output, size_t output_len) {
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, image_len);
+	uint8_t output_blake[BLAKE3_OUT_LEN];
+	blake3_hasher_finalize(&hasher, output_blake, BLAKE3_OUT_LEN);
+
+	int len = EVP_EncodeBlock(output, output_blake, BLAKE3_OUT_LEN);
+
+	return len < output_len && len > 0;
+}
+
+bool verify_upload(ArrayTus *up) {
+	unsigned char *image_bytes = NULL;
+	bool status;
+	unsigned char output[4 * ((BLAKE3_OUT_LEN + 2) / 3) + 1];
+
+	FILE *fp = fopen(up->url_image, "r+b");
+	if (!fp)
+		return false;
+
+	image_bytes = malloc(up->upload_length + 1048576);
+	if (!image_bytes) {
+		fclose(fp);
+		status = false;
+		goto end;
+	}
+
+	if (fread(image_bytes, 1, up->upload_length, fp) != up->upload_length) {
+		fclose(fp);
+		status = false;
+		goto end;
+	}
+
+	fclose(fp);
+	if (!get_hash(image_bytes, up->upload_length, output, sizeof(output)) ||
+	    strcmp(up->hash, (char *)output) != 0) {
+		status = false;
+		goto end;
+	}
+
+	status = true;
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
 
 void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 			   ArrayTus *up, size_t *n_up) {
@@ -283,6 +324,11 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 				      "Arquivo nao encontrado");
 			return;
 		}
+	}
+
+	if (!verify_exp_time(up[i].date_time)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "Arquivo expirou");
+		return;
 	}
 
 	if (up[i].upload_offset + hm->body.len > up[i].upload_length) {
@@ -321,6 +367,12 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 
 	fclose(fp);
 	up[i].upload_offset += hm->body.len;
+	if (up[i].upload_offset == up[i].upload_length &&
+	    !verify_upload(&up[i])) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "Arquivo é diferente");
+		remove(up[i].url_image);
+		return;
+	}
 
 	mg_http_reply(c, 204, DEFAULT_HEADERS, "");
 }

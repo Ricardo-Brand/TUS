@@ -75,7 +75,7 @@ static void fn(struct mg_connection *c, int ev, void *ev_data) {
 			free((void *)message);
 			s_response->message.buf = NULL;
 		}
-		printf("Response: %.*s\n", (int)hm->message.len, hm->message.buf);
+		// printf("Response: %.*s\n", (int)hm->message.len, hm->message.buf);
 		c->is_draining = 1; // Tell mongoose to close this connection
 		*(bool *)c->fn_data = true; // Tell event loop to stop
 	} else if (ev == MG_EV_ERROR) {
@@ -356,7 +356,7 @@ static bool test_image_post_success(struct mg_mgr *mgr){
 	status = true;
 	size = 0;
 
-	if (!copy_bytes("./tests/test_data/clefairy_ex-184_159.jpg",
+	if (!copy_bytes("./tests/test_data/banette-060_159.jpg",
 			&image_bytes, &size)) {
 		return false;
 	}	
@@ -420,7 +420,7 @@ static bool test_image_patch_success(struct mg_mgr *mgr){
 	status = true;
 	size = 0;
 
-	if (!copy_bytes("./tests/test_data/clefairy_ex-184_159.jpg",
+	if (!copy_bytes("./tests/test_data/banette-060_159.jpg",
 			&image_bytes, &size)) {
 		return false;
 	}	

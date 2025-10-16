@@ -4,15 +4,6 @@
 
 #define MAX_SIZE_UPLOAD 1073741824
 
-static const char *DEFAULT_HEADERS =
-	"Access-Control-Allow-Origin: *\r\n"
-	"Access-Control-Allow-Credentials: true\r\n"
-	"Access-Control-Allow-Methods: GET,POST,OPTIONS\r\n"
-	"Access-Control-Allow-Headers: "
-	"DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-"
-	"Since,Cache-Control,Content-Type\r\n"
-	"Cache-Control: no-store\r\n";
-
 bool verify_upload_checksum(struct mg_http_message *hm, char *hash,
 			    size_t hash_size) {
 	struct mg_str *up_cksum = mg_http_get_header(hm, "Upload-Checksum");
