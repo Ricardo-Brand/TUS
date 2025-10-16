@@ -21,10 +21,10 @@ clean:
 	@rm -rf ./build ./tmp
 
 format: 
-	@clang-format -i ./src/*.c ./src/middlewares/*.c
+	@clang-format -i ./src/*.c ./src/middlewares/*.c ./tests/*.c
 
 exec: build/server
 	@./build/server
 
 test:
-	@gcc -I/opt/homebrew/include -L/opt/homebrew/lib -lssl -lcrypto -lblake3 -ljansson -lmongoose ./tests/tests.c -o ./build/tests
+	@gcc -I/opt/homebrew/include -I./include -L/opt/homebrew/lib  ./tests/tests.c -lssl -lcrypto -lblake3 -ljansson -lmongoose  -o ./build/tests

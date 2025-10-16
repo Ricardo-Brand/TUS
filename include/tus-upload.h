@@ -3,11 +3,17 @@
 
 #include "mongoose.h"
 
+typedef enum {
+    HASH_SHA1,
+    HASH_BLAKE3
+} HashType;
+
 typedef struct ArrayTus{
 	char url_image[256];
 	size_t upload_length;
     size_t upload_offset;
 	char hash[65];
+    HashType hash_type;
     char date_time[65];
 } ArrayTus;
 

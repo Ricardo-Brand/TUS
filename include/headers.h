@@ -25,8 +25,8 @@ static const char *DEFAULT_HEADERS =
 	"Cache-Control: no-store\r\n";
 
 bool verify_post(struct mg_connection *c, struct mg_http_message *hm,
-			 char *hash, size_t hash_size,
-			 size_t *tus_upload_length);
+		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
+		 size_t *up_len);
 
 bool get_tus_resumable(struct mg_http_message *hm, char *version, size_t version_len);
 

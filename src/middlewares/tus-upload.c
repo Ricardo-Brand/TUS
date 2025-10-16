@@ -1,7 +1,8 @@
 #include <stdlib.h>
 #include <unistd.h>
-#include <string.h>
-#include <openssl/evp.h>
+#include <string.h> /* memcpy, strlen etc. */
+#include <openssl/evp.h> /* SHA1*/
+#include <openssl/sha.h> /* EVP_EncodeBlock (Base64) */
 #include "tus-upload.h"
 #include "blake3.h"
 #include "mongoose.h"
@@ -9,6 +10,8 @@
 #include "headers.h"
 
 #define IMAGE_PATH_SIZE 512
+
+typedef bool (*fn_get_hash)(unsigned char *, size_t, unsigned char *, size_t);
 
 // Pega o tempo atual e adiciona 5 minutos
 void get_gmt_date_plus_5min(char *buffer, size_t size) {
@@ -104,40 +107,32 @@ bool build_image_path(char *filename, char *image_path, size_t image_len) {
 	size_t prefix_len = strlen(prefix);
 	size_t suffix_len = strlen(suffix);
 	size_t filename_len = strlen(filename);
-	size_t pos, copy_len, remaining;
+	size_t pos, remaining;
 
 	// Limpa o buffer
 	memset(image_path, 0, image_len);
+	if (prefix_len > IMAGE_PATH_SIZE - 1) {
+		return false; // não cabe, aborta
+	}
 
-	// Copia prefixo
-	if (strnlen(prefix, prefix_len) >=
-	    (image_len - strnlen(image_path, image_len)))
-		return false;
-	pos = (prefix_len < IMAGE_PATH_SIZE - 1) ? prefix_len :
-						   IMAGE_PATH_SIZE - 1;
-	strncpy(image_path, prefix, pos);
-	image_path[pos] = '\0';
-
-	// Copia filename
-	if (strnlen(filename, filename_len) >=
-	    (image_len - strnlen(image_path, image_len)))
-		return false;
-
+	strncpy(image_path, prefix, prefix_len);
+	image_path[prefix_len] = '\0';
+	pos = prefix_len;
 	remaining = IMAGE_PATH_SIZE - 1 - pos;
-	copy_len = (filename_len < remaining) ? filename_len : remaining;
-	strncpy(image_path + pos, filename, copy_len);
-	pos += copy_len;
-	image_path[pos] = '\0';
-
-	// Copia sufixo
-	if (strnlen(suffix, suffix_len) >=
-	    (image_len - strnlen(image_path, image_len)))
+	if (filename_len > remaining) {
 		return false;
+	}
 
+	strncpy(image_path + pos, filename, filename_len);
+	pos += filename_len;
+	image_path[pos] = '\0';
 	remaining = IMAGE_PATH_SIZE - 1 - pos;
-	copy_len = (suffix_len < remaining) ? suffix_len : remaining;
-	strncpy(image_path + pos, suffix, copy_len);
-	pos += copy_len;
+	if (suffix_len > remaining) {
+		return false;
+	}
+
+	strncpy(image_path + pos, suffix, suffix_len);
+	pos += suffix_len;
 	image_path[pos] = '\0';
 
 	return true;
@@ -150,12 +145,23 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	char b58[65]; // saída Base58
 	char image_path[IMAGE_PATH_SIZE] = { 0 }, resumable[6] = { 0 },
 	     post_headers[1024] = { 0 };
-	char location[128];
+	char location[128], hash_type[10] = { 0 };
 	size_t len;
 
 	if (!verify_post(c, hm, up[*n_up].hash, sizeof(up[*n_up].hash),
+			 hash_type, sizeof(hash_type),
 			 &up[*n_up].upload_length)) {
 		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
+		return;
+	}
+
+	if (strncmp(hash_type, "blake3", 6) == 0) {
+		up[*n_up].hash_type = HASH_BLAKE3;
+	} else if (strncmp(hash_type, "sha1", 4) == 0) {
+		up[*n_up].hash_type = HASH_SHA1;
+	} else {
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "Tipo de hash não permitido");
 		return;
 	}
 
@@ -239,8 +245,8 @@ bool verify_exp_time(char *date_time) {
 	return t_now < t_plus5;
 }
 
-bool get_hash(unsigned char *image_bytes, size_t image_len,
-	      unsigned char *output, size_t output_len) {
+bool get_hash_blake3(unsigned char *image_bytes, size_t image_len,
+		     unsigned char *output, size_t output_len) {
 	blake3_hasher hasher;
 	blake3_hasher_init(&hasher);
 	blake3_hasher_update(&hasher, image_bytes, image_len);
@@ -252,10 +258,29 @@ bool get_hash(unsigned char *image_bytes, size_t image_len,
 	return len < output_len && len > 0;
 }
 
+bool get_hash_sha1(unsigned char *image_bytes, size_t image_len,
+		   unsigned char *output, size_t output_len) {
+	unsigned char hash[SHA_DIGEST_LENGTH];
+	SHA1(image_bytes, image_len, hash);
+
+	int len = EVP_EncodeBlock(output, hash, SHA_DIGEST_LENGTH);
+
+	return len < output_len && len > 0;
+}
+
 bool verify_upload(ArrayTus *up) {
 	unsigned char *image_bytes = NULL;
 	bool status;
-	unsigned char output[4 * ((BLAKE3_OUT_LEN + 2) / 3) + 1];
+	fn_get_hash get_hash = NULL;
+	unsigned char output[64];
+
+	if (up->hash_type == HASH_BLAKE3) {
+		get_hash = get_hash_blake3;
+	} else if (up->hash_type == HASH_SHA1) {
+		get_hash = get_hash_sha1;
+	} else {
+		return false;
+	}
 
 	FILE *fp = fopen(up->url_image, "r+b");
 	if (!fp)

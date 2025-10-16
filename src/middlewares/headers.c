@@ -4,15 +4,23 @@
 
 #define MAX_SIZE_UPLOAD 1073741824
 
-bool verify_upload_checksum(struct mg_http_message *hm, char *hash,
-			    size_t hash_size) {
+bool verify_upload_checksum(struct mg_http_message *hm, char *hash_type,
+			    size_t type_len, char *hash, size_t hash_size) {
 	struct mg_str *up_cksum = mg_http_get_header(hm, "Upload-Checksum");
-	if ((up_cksum->len - 8) >= hash_size || !up_cksum)
+	if ((up_cksum->len - 8) >= hash_size || !up_cksum || type_len < 7)
 		return false;
 
 	if (up_cksum->len >= 7 && strncmp(up_cksum->buf, "blake3 ", 7) == 0) {
 		memcpy(hash, up_cksum->buf + 7, up_cksum->len - 7);
 		hash[up_cksum->len - 7] = '\0';
+		strncpy(hash_type, "blake3", type_len);
+		hash_type[strlen("blake3")] = '\0';
+	} else if (up_cksum->len >= 5 &&
+		   strncmp(up_cksum->buf, "sha1 ", 5) == 0) {
+		memcpy(hash, up_cksum->buf + 5, up_cksum->len - 5);
+		hash[up_cksum->len - 5] = '\0';
+		strncpy(hash_type, "sha1", type_len);
+		hash_type[strlen("sha1")] = '\0';
 	} else
 		return false;
 
@@ -51,8 +59,9 @@ bool verify_tus_resumable(struct mg_http_message *hm) {
 }
 
 bool verify_post(struct mg_connection *c, struct mg_http_message *hm,
-		 char *hash, size_t hash_size, size_t *up_len) {
-	if (!verify_upload_checksum(hm, hash, hash_size) ||
+		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
+		 size_t *up_len) {
+	if (!verify_upload_checksum(hm, hash_type, type_len, hash, hash_size) ||
 	    !verify_tus_resumable(hm) || !verify_upload_length(hm, up_len))
 		return false;
 
