@@ -1,0 +1,30 @@
+.PHONY: all build exec clean create-dir test
+
+all: clean create-dir format exec
+
+build/headers.o: ./src/middlewares/headers.c ./include/headers.h
+	@gcc -I/opt/homebrew/include -I./include -c ./src/middlewares/headers.c -o ./build/headers.o
+
+build/tus-upload.o: ./src/middlewares/tus-upload.c ./include/tus-upload.h ./include/libbase58.h ./include/headers.h
+	@gcc -I/opt/homebrew/include -I./include -c ./src/middlewares/tus-upload.c -o ./build/tus-upload.o
+
+build/libbase58.o: ./src/base58.c ./include/libbase58.h
+	@gcc -I/opt/homebrew/include -I./include -c ./src/base58.c -o ./build/libbase58.o
+
+build/server: ./src/server.c build/headers.o build/tus-upload.o build/libbase58.o
+	@gcc -I/opt/homebrew/include -I./include ./src/server.c ./build/headers.o ./build/tus-upload.o ./build/libbase58.o -L/opt/homebrew/lib -lssl -lcrypto -lmongoose -lblake3 -o ./build/server
+
+create-dir: 
+	@mkdir -p ./build ./tmp
+
+clean: 
+	@rm -rf ./build ./tmp
+
+format: 
+	@clang-format -i ./src/*.c ./src/middlewares/*.c
+
+exec: build/server
+	@./build/server
+
+test:
+	@gcc -I/opt/homebrew/include -L/opt/homebrew/lib -lssl -lcrypto -lblake3 -ljansson -lmongoose ./tests/tests.c -o ./build/tests

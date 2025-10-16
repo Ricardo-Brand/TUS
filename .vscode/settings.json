@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "libbase58.h": "c",
+        "stdint.h": "c",
+        "unistd.h": "c"
+    }
+}

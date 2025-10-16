@@ -1,0 +1,21 @@
+#ifndef _TUS_UPLOAD_H_
+#define _TUS_UPLOAD_H_
+
+#include "mongoose.h"
+
+typedef struct ArrayTus{
+	char url_image[256];
+	size_t upload_length;
+    size_t upload_offset;
+	char hash[65];
+    char date_time[65];
+} ArrayTus;
+
+void middlewares_tus_options(struct mg_connection *c);
+
+void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm, ArrayTus *tus_uploads, size_t *num_uploads);
+
+void middlewares_tus_patch(struct mg_connection *c,
+			   struct mg_http_message *hm, ArrayTus *tus_uploads, size_t *num_uploads);
+
+#endif
