@@ -93,7 +93,6 @@ bool compare_checksum(struct mg_http_message *hm, const char *hash,
 	memcpy(hash_aux, up_cksum->buf + prefix_len,
 	       up_cksum->len - prefix_len);
 	hash_aux[up_cksum->len - prefix_len] = '\0';
-
 	return strncmp(hash, hash_aux, hash_len) == 0;
 }
 
@@ -113,10 +112,26 @@ bool verify_content_type(struct mg_http_message *hm) {
 	return true;
 }
 
+bool verify_upload_offset(struct mg_http_message *hm, size_t offset) {
+	struct mg_str *up_offset = mg_http_get_header(hm, "Upload-Offset");
+	size_t buf_offset = 0;
+	char buf[16], *endptr = NULL;
+	if (!up_offset || up_offset->len >= sizeof(buf))
+		return false;
+
+	memcpy(buf, up_offset->buf, up_offset->len);
+	buf[up_offset->len] = '\0';
+	buf_offset = (size_t)strtol(buf, &endptr, 10);
+
+	return offset >= 0 && endptr != buf && *endptr == '\0' &&
+	       offset < MAX_SIZE_UPLOAD && buf_offset == offset;
+}
+
 bool verify_headers_patch(struct mg_http_message *hm, char *hash,
-			  size_t hash_size) {
+			  size_t hash_size, size_t offset) {
 	if (!compare_checksum(hm, hash, strnlen(hash, hash_size)) ||
-	    !verify_tus_resumable(hm) || !verify_content_type(hm))
+	    !verify_tus_resumable(hm) || !verify_content_type(hm) ||
+	    !verify_upload_offset(hm, offset))
 		return false;
 
 	return true;

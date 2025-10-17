@@ -234,9 +234,9 @@ bool verify_json(struct mg_http_message *message, JsonFieldCheck *fields,
 		memcpy(buffer, message->body.buf + offset, toklen);
 		buffer[toklen] = '\0';
 
-		if(fields[i].type != JSON_EXPECT_STRING)
+		if (fields[i].type != JSON_EXPECT_STRING)
 			return false;
-		
+
 		type_str = mg_json_get_str(json, fields[i].field);
 
 		if (type_num == false && type_str == NULL) {
@@ -675,7 +675,7 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 	struct mg_http_message message;
 	char *image_bytes;
 	size_t size;
-	uint8_t hash[BLAKE3_OUT_LEN];
+	unsigned char hash[SHA_DIGEST_LENGTH];
 	char headers[512];
 	bool status;
 
@@ -689,14 +689,10 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 		return false;
 	}
 
-	blake3_hasher hasher;
-	blake3_hasher_init(&hasher);
-	blake3_hasher_update(&hasher, image_bytes, size);
-	blake3_hasher_finalize(&hasher, hash, BLAKE3_OUT_LEN);
-
-	unsigned char base64_output[4 * ((BLAKE3_OUT_LEN + 2) / 3) + 1];
+	SHA1((const unsigned char *)image_bytes, size, hash);
+	unsigned char base64_output[4 * ((SHA_DIGEST_LENGTH + 2) / 3) + 1];
 	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash,
-				  BLAKE3_OUT_LEN);
+				  SHA_DIGEST_LENGTH);
 	if (len >= sizeof(base64_output) || len <= 0) {
 		status = false;
 		goto end;
@@ -705,7 +701,7 @@ static bool test_image_post_sha1_claydol_success(struct mg_mgr *mgr) {
 	base64_output[len] = '\0';
 	snprintf(
 		headers, sizeof(headers),
-		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		"Upload-Checksum: sha1 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
 		base64_output, size);
 	memset(s_checksum, 0, sizeof(s_checksum));
 	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);

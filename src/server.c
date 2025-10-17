@@ -4,7 +4,6 @@
 #include <unistd.h>
 
 static ArrayTus tus_uploads[10];
-static size_t num_uploads;
 
 static void cb(struct mg_connection *c, int ev, void *ev_data) {
 	if (ev == MG_EV_HTTP_MSG) {
@@ -14,11 +13,6 @@ static void cb(struct mg_connection *c, int ev, void *ev_data) {
 		       (int)hm->method.len, hm->method.buf, (int)hm->uri.len,
 		       hm->uri.buf);
 
-		if (num_uploads >= 10) {
-			mg_http_reply(c, 500, DEFAULT_HEADERS,
-				      "Internal Error");
-			return;
-		}
 		if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
 			mg_http_reply(c, 204, OPTIONS_HEADERS, "");
 			return;
@@ -28,10 +22,12 @@ static void cb(struct mg_connection *c, int ev, void *ev_data) {
 			return;
 		} else if (mg_match(hm->uri, mg_str("/files"), NULL) &&
 			   mg_match(hm->method, mg_str("POST"), NULL)) {
-			middlewares_tus_post(c, hm, tus_uploads, &num_uploads);
+			middlewares_tus_post(c, hm, tus_uploads,
+					     sizeof(tus_uploads));
 		} else if (mg_match(hm->uri, mg_str("/files/*"), NULL) &&
 			   mg_match(hm->method, mg_str("PATCH"), NULL)) {
-			middlewares_tus_patch(c, hm, tus_uploads, &num_uploads);
+			middlewares_tus_patch(c, hm, tus_uploads,
+					      sizeof(tus_uploads));
 		}
 	}
 }
@@ -44,7 +40,6 @@ int main(void) {
 	printf("Servidor rodando em: http://0.0.0.0:8080\n");
 
 	memset(tus_uploads, 0, sizeof(tus_uploads));
-	num_uploads = 0;
 
 	for (;;)
 		mg_mgr_poll(&mgr, 50);

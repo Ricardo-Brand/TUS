@@ -31,7 +31,7 @@ bool verify_headers_post(struct mg_http_message *hm,
 		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
 		 size_t *up_len);
 
-bool verify_headers_patch(struct mg_http_message *hm, char *hash, size_t hash_size);
+bool verify_headers_patch(struct mg_http_message *hm, char *hash, size_t hash_size, size_t offset);
 
 bool get_tus_resumable(struct mg_http_message *hm, char *version, size_t version_len);
 

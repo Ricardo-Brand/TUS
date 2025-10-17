@@ -139,33 +139,42 @@ bool build_image_path(char *filename, char *image_path, size_t image_len) {
 }
 
 void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
-			  ArrayTus *up, size_t *n_up) {
+			  ArrayTus *up, size_t n_up) {
 	char cksum[128] = { 0 };
 	uint8_t hash[46];
 	char b58[65]; // saída Base58
 	char image_path[IMAGE_PATH_SIZE] = { 0 }, resumable[6] = { 0 },
 	     post_headers[1024] = { 0 };
 	char location[128], hash_type[10] = { 0 };
-	size_t len;
+	size_t len, i = 0;
 
-	if (!verify_headers_post(hm, up[*n_up].hash, sizeof(up[*n_up].hash),
-				 hash_type, sizeof(hash_type),
-				 &up[*n_up].upload_length)) {
+	for (size_t j = 0; j <= n_up; j++) {
+		if (up[j].occupied == false) {
+			i = j;
+			break;
+		} else if (j == n_up) {
+			mg_http_reply(c, 500, DEFAULT_HEADERS, "Erro interno");
+			return;
+		}
+	}
+
+	if (!verify_headers_post(hm, up[i].hash, sizeof(up[i].hash), hash_type,
+				 sizeof(hash_type), &up[i].upload_length)) {
 		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
 		return;
 	}
 
 	if (strncmp(hash_type, "blake3", 6) == 0) {
-		up[*n_up].hash_type = HASH_BLAKE3;
+		up[i].hash_type = HASH_BLAKE3;
 	} else if (strncmp(hash_type, "sha1", 4) == 0) {
-		up[*n_up].hash_type = HASH_SHA1;
+		up[i].hash_type = HASH_SHA1;
 	} else {
 		mg_http_reply(c, 400, DEFAULT_HEADERS,
 			      "Tipo de hash não permitido");
 		return;
 	}
 
-	if (!base64_to_base58(up[*n_up].hash, b58, sizeof(b58))) {
+	if (!base64_to_base58(up[i].hash, b58, sizeof(b58))) {
 		mg_http_reply(c, 500, DEFAULT_HEADERS,
 			      "Não foi possível encodar hash em Base58");
 		return;
@@ -179,14 +188,13 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 
 	if (!get_tus_resumable(hm, resumable, sizeof(resumable)) ||
 	    strnlen(image_path, sizeof(image_path)) >=
-		    sizeof(up[*n_up].url_image)) {
+		    sizeof(up[i].url_image)) {
 		mg_http_reply(c, 500, DEFAULT_HEADERS, "Houve um erro interno");
 		return;
 	}
 
-	strncpy(up[*n_up].url_image, image_path, sizeof(up[*n_up].url_image));
-	get_gmt_date_plus_5min(up[*n_up].date_time,
-			       sizeof(up[*n_up].date_time));
+	strncpy(up[i].url_image, image_path, sizeof(up[i].url_image));
+	get_gmt_date_plus_5min(up[i].date_time, sizeof(up[i].date_time));
 
 	if (strlen("http://127.0.0.1:8080/files/") +
 		    strnlen(b58, sizeof(b58)) >=
@@ -203,7 +211,7 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	    !concat_header_post(post_headers, sizeof(post_headers),
 				"Tus-Resumable", resumable) ||
 	    !concat_header_post(post_headers, sizeof(post_headers),
-				"Upload-Expires", up[*n_up].date_time)) {
+				"Upload-Expires", up[i].date_time)) {
 		mg_http_reply(c, 500, DEFAULT_HEADERS, "Houve um erro interno");
 		return;
 	}
@@ -223,7 +231,7 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	}
 
 	fclose(fp);
-	(*n_up)++;
+	up[i].occupied = true;
 	mg_http_reply(c, 201, post_headers, "");
 }
 
@@ -317,7 +325,7 @@ end:
 }
 
 void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
-			   ArrayTus *up, size_t *n_up) {
+			   ArrayTus *up, size_t n_up) {
 	char image_url[256] = { 0 }, file_id[65] = { 0 };
 	size_t i;
 
@@ -339,19 +347,20 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 
 	snprintf(image_url, sizeof(image_url), "./tmp/%s.jpg", file_id);
 
-	for (size_t j = 0; j <= *n_up; j++) {
-		if (strcmp(image_url, up[j].url_image) == 0) {
+	for (size_t j = 0; j <= n_up; j++) {
+		if (strcmp(image_url, up[j].url_image) == 0 && up[j].occupied) {
 			i = j;
 			break;
 		}
-		if (j == *n_up) {
+		if (j == n_up) {
 			mg_http_reply(c, 500, DEFAULT_HEADERS,
 				      "Arquivo nao encontrado");
 			return;
 		}
 	}
 
-	if (!verify_headers_patch(hm, up[i].hash, sizeof(up[i].hash))) {
+	if (!verify_headers_patch(hm, up[i].hash, sizeof(up[i].hash),
+				  up[i].upload_offset)) {
 		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
 		return;
 	}
@@ -402,6 +411,7 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 		mg_http_reply(c, 400, DEFAULT_HEADERS,
 			      "\"Arquivo é diferente\"");
 		remove(up[i].url_image);
+		memset(&up[i], 0, sizeof(up[i]));
 		return;
 	}
 
