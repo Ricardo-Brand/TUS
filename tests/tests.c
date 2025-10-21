@@ -1550,6 +1550,212 @@ end:
 	return status;
 }
 
+static bool
+test_header_patch_upload_checksum_hash_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 abcde\r\n",
+		size);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool
+test_header_patch_upload_checksum_encode_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: md5 %s\r\n",
+		size, s_checksum);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool
+test_header_patch_content_type_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\n",
+		size, s_checksum);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_head_tus_resumable_success(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	char query_url[2048];
+	char headers[512];
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(headers, sizeof(headers), "Tus-Resumable: 1.0.0\r\n");
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "HEAD");
+
+	if (!request(mgr, &message, query_url, headers, NULL, 0))
+		return false;
+
+	if (mg_http_status(&message) != 200)
+		return false;
+
+	return true;
+}
+
+static bool
+test_header_head_tus_resumable_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	size_t num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(headers, sizeof(headers), "Tus-Resumable: 2.0.0\r\n");
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "HEAD");
+
+	if (!request(mgr, &message, query_url, headers, NULL, 0))
+		return false;
+
+	if (mg_http_status(&message) != 400)
+		return false;
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num))
+		return false;
+
+	return true;
+}
+
 static Test s_tests[] = {
 	{
 		.name = "test_image_post_blake3_banette_success",
@@ -1582,6 +1788,10 @@ static Test s_tests[] = {
 	{
 		.name = "test_image_patch_sha1_claydol_failure",
 		.callback = test_image_patch_sha1_claydol_failure,
+	},
+	{
+		.name = "test_image_patch_non_existent_failure",
+		.callback = test_image_patch_non_existent_failure,
 	},
 	{
 		.name = "test_header_post_tus_version_failure",
@@ -1625,8 +1835,26 @@ static Test s_tests[] = {
 		.callback = test_header_patch_tus_resumable_different_failure,
 	},
 	{
-		.name = "test_image_patch_non_existent_failure",
-		.callback = test_image_patch_non_existent_failure,
+		.name = "test_header_patch_upload_checksum_hash_different_failure",
+		.callback =
+			test_header_patch_upload_checksum_hash_different_failure,
+	},
+	{
+		.name = "test_header_patch_upload_checksum_encode_different_failure",
+		.callback =
+			test_header_patch_upload_checksum_encode_different_failure,
+	},
+	{
+		.name = "test_header_patch_content_type_different_failure",
+		.callback = test_header_patch_content_type_different_failure,
+	},
+	{
+		.name = "test_header_head_tus_resumable_success",
+		.callback = test_header_head_tus_resumable_success,
+	},
+	{
+		.name = "test_header_head_tus_resumable_different_failure",
+		.callback = test_header_head_tus_resumable_different_failure,
 	}
 };
 
