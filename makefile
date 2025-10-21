@@ -26,5 +26,5 @@ format:
 exec: build/server
 	@./build/server
 
-test:
-	@gcc -I/opt/homebrew/include -I./include -L/opt/homebrew/lib  ./tests/tests.c -lssl -lcrypto -lblake3 -ljansson -lmongoose  -o ./build/tests
+test: ./build/libbase58.o
+	@gcc -I/opt/homebrew/include -I./include -L/opt/homebrew/lib ./build/libbase58.o ./tests/tests.c -lssl -lcrypto -lblake3 -ljansson -lmongoose  -o ./build/tests

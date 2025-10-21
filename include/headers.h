@@ -3,6 +3,7 @@
 
 #include "mongoose.h"
 #include <stdbool.h>
+#include <stdarg.h>
 
 static const char *OPTIONS_HEADERS =
 	"Access-Control-Allow-Origin: *\r\n"
@@ -27,14 +28,17 @@ static const char *DEFAULT_HEADERS =
     "Content-Type: application/json\r\n"
 	"Cache-Control: no-store\r\n";
 
-bool verify_headers_post(struct mg_http_message *hm,
-		 char *hash, size_t hash_size, char *hash_type, size_t type_len,
-		 size_t *up_len);
+int verify_headers_post(struct mg_http_message *hm, char *hash,
+			 size_t hash_size, char *hash_type, size_t type_len,
+			 size_t *up_len);
 
 bool verify_headers_patch(struct mg_http_message *hm, char *hash, size_t hash_size, size_t offset);
 
+bool verify_headers_head(struct mg_http_message *hm);
+
 bool get_tus_resumable(struct mg_http_message *hm, char *version, size_t version_len);
 
-bool concat_header_post(char *headers, size_t headers_len, const char *header_name, const char *value);
+bool concat_headers(char *headers, size_t headers_len,
+                    const char *header_name, const char *fmt, ...);
 
 #endif

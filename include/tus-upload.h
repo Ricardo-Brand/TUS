@@ -17,13 +17,16 @@ typedef struct ArrayTus{
     HashType hash_type;
     char date_time[65];
     bool occupied;
+    char resumable[6];
 } ArrayTus;
 
 void middlewares_tus_options(struct mg_connection *c);
 
-void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm, ArrayTus *tus_uploads, size_t num_uploads);
+void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm, ArrayTus *tus_uploads, size_t *num_uploads);
 
 void middlewares_tus_patch(struct mg_connection *c,
-			   struct mg_http_message *hm, ArrayTus *tus_uploads, size_t num_uploads);
+			   struct mg_http_message *hm, ArrayTus *tus_uploads, size_t *num_uploads);
+
+void middlewares_tus_head(struct mg_connection *c, struct mg_http_message *hm, ArrayTus *up, size_t *n_up);
 
 #endif

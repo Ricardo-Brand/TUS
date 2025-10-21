@@ -14,9 +14,9 @@
 typedef bool (*fn_get_hash)(unsigned char *, size_t, unsigned char *, size_t);
 
 // Pega o tempo atual e adiciona 5 minutos
-void get_gmt_date_plus_5min(char *buffer, size_t size) {
+void get_gmt_date_plus_5sec(char *buffer, size_t size) {
 	time_t now = time(NULL);
-	now += 5 * 60; // adiciona 5 minutos (em segundos)
+	now += 5; // adiciona 5 segundos
 	struct tm *gmt = gmtime(&now);
 	strftime(buffer, size, "%a, %d %b %Y %H:%M:%S GMT", gmt);
 }
@@ -139,28 +139,45 @@ bool build_image_path(char *filename, char *image_path, size_t image_len) {
 }
 
 void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
-			  ArrayTus *up, size_t n_up) {
+			  ArrayTus *up, size_t *n_up) {
 	char cksum[128] = { 0 };
 	uint8_t hash[46];
 	char b58[65]; // saída Base58
-	char image_path[IMAGE_PATH_SIZE] = { 0 }, resumable[6] = { 0 },
-	     post_headers[1024] = { 0 };
+	char image_path[IMAGE_PATH_SIZE] = { 0 }, post_headers[1024] = { 0 };
 	char location[128], hash_type[10] = { 0 };
 	size_t len, i = 0;
+	bool found = false;
 
-	for (size_t j = 0; j <= n_up; j++) {
+	if (hm->body.len > 0) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "\"POST /files não aceita body\"");
+		return;
+	}
+
+	for (size_t j = 0; j <= *n_up; j++) {
 		if (up[j].occupied == false) {
 			i = j;
+			found = true;
 			break;
-		} else if (j == n_up) {
-			mg_http_reply(c, 500, DEFAULT_HEADERS, "Erro interno");
-			return;
 		}
 	}
 
-	if (!verify_headers_post(hm, up[i].hash, sizeof(up[i].hash), hash_type,
-				 sizeof(hash_type), &up[i].upload_length)) {
-		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
+	if (!found) {
+		mg_http_reply(c, 500, DEFAULT_HEADERS, "\"Erro interno\"");
+		return;
+	}
+
+	int headers = verify_headers_post(hm, up[i].hash, sizeof(up[i].hash),
+					  hash_type, sizeof(hash_type),
+					  &up[i].upload_length);
+
+	if (headers == -2) {
+		mg_http_reply(c, 413, DEFAULT_HEADERS,
+			      "\"Request Entity Too Large\"");
+		return;
+	} else if (headers != 0) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "\"Informações faltando\"");
 		return;
 	}
 
@@ -186,7 +203,7 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 		return;
 	}
 
-	if (!get_tus_resumable(hm, resumable, sizeof(resumable)) ||
+	if (!get_tus_resumable(hm, up[i].resumable, sizeof(up[i].resumable)) ||
 	    strnlen(image_path, sizeof(image_path)) >=
 		    sizeof(up[i].url_image)) {
 		mg_http_reply(c, 500, DEFAULT_HEADERS, "Houve um erro interno");
@@ -194,7 +211,7 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	}
 
 	strncpy(up[i].url_image, image_path, sizeof(up[i].url_image));
-	get_gmt_date_plus_5min(up[i].date_time, sizeof(up[i].date_time));
+	get_gmt_date_plus_5sec(up[i].date_time, sizeof(up[i].date_time));
 
 	if (strlen("http://127.0.0.1:8080/files/") +
 		    strnlen(b58, sizeof(b58)) >=
@@ -206,12 +223,12 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 	snprintf(location, sizeof(location), "http://127.0.0.1:8080/files/%s",
 		 b58);
 
-	if (!concat_header_post(post_headers, sizeof(post_headers), "Location",
-				location) ||
-	    !concat_header_post(post_headers, sizeof(post_headers),
-				"Tus-Resumable", resumable) ||
-	    !concat_header_post(post_headers, sizeof(post_headers),
-				"Upload-Expires", up[i].date_time)) {
+	if (!concat_headers(post_headers, sizeof(post_headers), "Location",
+			    "%s", location) ||
+	    !concat_headers(post_headers, sizeof(post_headers), "Tus-Resumable",
+			    "%s", up[i].resumable) ||
+	    !concat_headers(post_headers, sizeof(post_headers),
+			    "Upload-Expires", "%s", up[i].date_time)) {
 		mg_http_reply(c, 500, DEFAULT_HEADERS, "Houve um erro interno");
 		return;
 	}
@@ -325,43 +342,46 @@ end:
 }
 
 void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
-			   ArrayTus *up, size_t n_up) {
+			   ArrayTus *up, size_t *n_up) {
 	char image_url[256] = { 0 }, file_id[65] = { 0 };
+	bool found = false;
 	size_t i;
 
 	if (hm->body.len == 0) {
-		mg_http_reply(c, 400, DEFAULT_HEADERS, "Body vazio");
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "\"Body vazio\"");
 		return;
 	}
 
 	if ((hm->uri.len - 7) >= sizeof(file_id)) {
-		mg_http_reply(c, 500, DEFAULT_HEADERS, "URL muito grande");
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
 		return;
 	}
 
 	memcpy(file_id, hm->uri.buf + 7, hm->uri.len - 7);
 	if ((strnlen(file_id, sizeof(file_id)) + 10) >= sizeof(image_url)) {
-		mg_http_reply(c, 500, DEFAULT_HEADERS, "URL muito grande");
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
 		return;
 	}
 
 	snprintf(image_url, sizeof(image_url), "./tmp/%s.jpg", file_id);
-
-	for (size_t j = 0; j <= n_up; j++) {
+	for (size_t j = 0; j < *n_up; j++) {
 		if (strcmp(image_url, up[j].url_image) == 0 && up[j].occupied) {
 			i = j;
+			found = true;
 			break;
 		}
-		if (j == n_up) {
-			mg_http_reply(c, 500, DEFAULT_HEADERS,
-				      "Arquivo nao encontrado");
-			return;
-		}
+	}
+
+	if (!found) {
+		mg_http_reply(c, 404, DEFAULT_HEADERS,
+			      "\"Arquivo nao encontrado\"");
+		return;
 	}
 
 	if (!verify_headers_patch(hm, up[i].hash, sizeof(up[i].hash),
 				  up[i].upload_offset)) {
-		mg_http_reply(c, 400, DEFAULT_HEADERS, "Headers faltando");
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "\"Informações faltando\"");
 		return;
 	}
 
@@ -416,4 +436,66 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 	}
 
 	mg_http_reply(c, 204, DEFAULT_HEADERS, "");
+}
+
+/*
+*
+    HEAD
+*
+*/
+
+void middlewares_tus_head(struct mg_connection *c, struct mg_http_message *hm,
+			  ArrayTus *up, size_t *n_up) {
+	char image_url[256] = { 0 }, file_id[65] = { 0 };
+	size_t i;
+	char head_headers[256];
+	bool found = false;
+
+	if (!verify_headers_head(hm)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS,
+			      "\"Informações faltando\"");
+		return;
+	}
+
+	if ((hm->uri.len - 7) >= sizeof(file_id)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
+		return;
+	}
+
+	memcpy(file_id, hm->uri.buf + 7, hm->uri.len - 7);
+	if ((strnlen(file_id, sizeof(file_id)) + 10) >= sizeof(image_url)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
+		return;
+	}
+
+	snprintf(image_url, sizeof(image_url), "./tmp/%s.jpg", file_id);
+
+	for (size_t j = 0; j < *n_up; j++) {
+		if (strcmp(image_url, up[j].url_image) == 0 && up[j].occupied) {
+			i = j;
+			found = true;
+			break;
+		}
+	}
+
+	if (!found) {
+		mg_http_reply(c, 404, DEFAULT_HEADERS,
+			      "Arquivo nao encontrado");
+		return;
+	}
+
+	if (!concat_headers(head_headers, sizeof(head_headers), "Upload-Offset",
+			    "%zu", up[i].upload_offset) ||
+	    !concat_headers(head_headers, sizeof(head_headers), "Upload-Length",
+			    "%zu", up[i].upload_length) ||
+	    !concat_headers(head_headers, sizeof(head_headers),
+			    "Upload-Expires", "%s", up[i].date_time) ||
+	    !concat_headers(head_headers, sizeof(head_headers), "Tus-Resumable",
+			    "%s", up[i].resumable)) {
+		mg_http_reply(c, 500, DEFAULT_HEADERS, "Erro interno");
+		return;
+	}
+
+	mg_http_reply(c, 200, head_headers, "");
+	return;
 }

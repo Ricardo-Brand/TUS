@@ -7,7 +7,9 @@
 #include <jansson.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h> /* SHA1 */
+#include <openssl/rand.h>
 #include "blake3.h"
+#include "libbase58.h"
 
 static const char *s_host = "http://localhost:8080";
 static char s_url[2048] = { 0 };
@@ -545,7 +547,8 @@ static bool test_image_patch_blake3_scrafty_failure(struct mg_mgr *mgr) {
 	}
 
 	if (!verify_headers(&message)) {
-		return false;
+		status = false;
+		goto end;
 	}
 
 	if (mg_http_status(&message) != 400) {
@@ -796,6 +799,757 @@ end:
 	return status;
 }
 
+bool generate_random_bytes(unsigned char **out, size_t *size, size_t len) {
+	if (!out || !size || len == 0)
+		return false;
+
+	unsigned char *buffer = malloc(len);
+	if (!buffer)
+		return false;
+
+	if (RAND_bytes(buffer, (int)len) != 1) {
+		free(buffer);
+		return false;
+	}
+
+	*out = buffer;
+	*size = len;
+	return true;
+}
+
+static bool test_image_patch_non_existent_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[32];
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Arquivo nao encontrado\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, 512 * 1024)) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, 512 * 1024);
+	blake3_hasher_finalize(&hasher, hash, BLAKE3_OUT_LEN);
+
+	unsigned char base64_output[4 * ((BLAKE3_OUT_LEN + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash,
+				  BLAKE3_OUT_LEN);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+	snprintf(query_url, sizeof(query_url), "/files/%s",
+		 (const char *)base64_output);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\n",
+		size, base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 404) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_post_tus_version_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[32];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, (1024 * 1024))) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, size);
+	blake3_hasher_finalize(&hasher, hash, 32);
+
+	unsigned char base64_output[4 * ((32 + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash, 32);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 2.0.0\r\n",
+		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_post_upload_length_large_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[32];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Request Entity Too Large\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, 1024 * 1024)) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+	size = 1024 * 1024 * 1024 + 8;
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, 1024 * 1024);
+	blake3_hasher_finalize(&hasher, hash, 32);
+
+	unsigned char base64_output[4 * ((32 + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash, 32);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 413) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_post_upload_length_zero_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[32];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, 1024 * 1024)) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+	size = 0;
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, 1024 * 1024);
+	blake3_hasher_finalize(&hasher, hash, 32);
+
+	unsigned char base64_output[4 * ((32 + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash, 32);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_post_upload_checksum_large_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[128];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, 1024 * 1024)) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, 1024 * 1024);
+	blake3_hasher_finalize(&hasher, hash, 128);
+
+	unsigned char base64_output[4 * ((128 + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash, 128);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_post_upload_checksum_zero_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	size_t num;
+	uint8_t hash[128];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 \r\nUpload-Length: 100\r\nTus-Resumable: 1.0.0\r\n");
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+	status = true;
+end:
+	return status;
+}
+
+static bool
+test_header_post_upload_checksum_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	uint8_t hash[32];
+	char headers[512];
+	bool status;
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(&image_bytes, &size, 1024 * 1024)) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, image_bytes, 1024 * 1024);
+	blake3_hasher_finalize(&hasher, hash, 32);
+
+	unsigned char base64_output[4 * ((32 + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash, 32);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: md5 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		base64_output, size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool post_success(struct mg_mgr *mgr, unsigned char **image_bytes,
+			 size_t *size) {
+	struct mg_http_message message;
+	uint8_t hash[BLAKE3_OUT_LEN];
+	char headers[512];
+	bool status;
+
+	// Inicialização das variáveis
+	status = true;
+
+	// Gera 1mb de bytes aleatórios
+	if (!generate_random_bytes(image_bytes, size,
+				   (1024 * 1024) + (512 * 1024))) {
+		fprintf(stderr, "Erro ao gerar bytes aleatórios\n");
+		return false;
+	}
+
+	blake3_hasher hasher;
+	blake3_hasher_init(&hasher);
+	blake3_hasher_update(&hasher, *image_bytes, *size);
+	blake3_hasher_finalize(&hasher, hash, BLAKE3_OUT_LEN);
+
+	unsigned char base64_output[4 * ((BLAKE3_OUT_LEN + 2) / 3) + 1];
+	int len = EVP_EncodeBlock((unsigned char *)base64_output, hash,
+				  BLAKE3_OUT_LEN);
+	if (len >= sizeof(base64_output) || len <= 0) {
+		status = false;
+		goto end;
+	}
+
+	base64_output[len] = '\0';
+	snprintf(
+		headers, sizeof(headers),
+		"Upload-Checksum: blake3 %s\r\nUpload-Length: %zu\r\nTus-Resumable: 1.0.0\r\n",
+		base64_output, *size);
+	memset(s_checksum, 0, sizeof(s_checksum));
+	snprintf(s_checksum, sizeof(s_checksum), "%s", base64_output);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "POST");
+
+	if (!request(mgr, &message, "/files", headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	size_t id_len;
+	const char *location = get_file_id_from_location(&message, &id_len);
+	if (!location) {
+		status = false;
+		goto end;
+	}
+
+	memset(s_location, 0, sizeof(s_location));
+	strncpy(s_location, location, sizeof(s_location) - 1);
+
+	if (s_location[0] == '\0' || id_len >= sizeof(s_location)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 201) {
+		status = false;
+		goto end;
+	}
+
+	s_location[id_len] = '\0';
+	return true;
+end:
+	if (image_bytes != NULL && *image_bytes != NULL) {
+		free(*image_bytes);
+		*image_bytes = NULL;
+	}
+
+	return false;
+}
+
+static bool test_header_patch_content_length_zero_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Body vazio\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\n",
+		size, s_checksum);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers, NULL, 0)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool
+test_header_patch_content_length_different_body_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\nContent-Length: 100\r\n",
+		size, s_checksum);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool test_header_patch_content_length_large_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 1.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\nContent-Length: %zu\r\n",
+		size, s_checksum, (size_t)(1024 * 1024 + 1024));
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
+static bool
+test_header_patch_tus_resumable_different_failure(struct mg_mgr *mgr) {
+	struct mg_http_message message;
+	unsigned char *image_bytes;
+	size_t size, num;
+	bool status;
+	char query_url[2048];
+	char headers[512];
+	JsonFieldCheck check[] = { { "$", "\"Informações faltando\"",
+				     JSON_EXPECT_STRING } };
+
+	// Inicialização das variáveis
+	image_bytes = NULL;
+	status = true;
+	size = 0;
+
+	if (!post_success(mgr, &image_bytes, &size))
+		return false;
+
+	snprintf(query_url, sizeof(query_url), "/files/%s", s_location);
+	snprintf(
+		headers, sizeof(headers),
+		"Content-Type: application/offset+octet-stream\r\nUpload-Offset: %zu\r\nTus-Resumable: 2.0.0\r\nConnection: keep-alive\r\nUpload-Checksum: blake3 %s\r\n",
+		size, s_checksum);
+	memset(s_method, 0, sizeof(s_method));
+	snprintf(s_method, sizeof(s_method), "PATCH");
+
+	if (!request(mgr, &message, query_url, headers,
+		     (const char *)image_bytes, size)) {
+		status = false;
+		goto end;
+	}
+
+	if (mg_http_status(&message) != 400) {
+		status = false;
+		goto end;
+	}
+
+	num = sizeof(check) / sizeof(check[0]);
+	if (!verify_json(&message, check, num)) {
+		status = false;
+		goto end;
+	}
+
+end:
+	if (image_bytes != NULL) {
+		free(image_bytes);
+		image_bytes = NULL;
+	}
+
+	return status;
+}
+
 static Test s_tests[] = {
 	{
 		.name = "test_image_post_blake3_banette_success",
@@ -828,6 +1582,51 @@ static Test s_tests[] = {
 	{
 		.name = "test_image_patch_sha1_claydol_failure",
 		.callback = test_image_patch_sha1_claydol_failure,
+	},
+	{
+		.name = "test_header_post_tus_version_failure",
+		.callback = test_header_post_tus_version_failure,
+	},
+	{
+		.name = "test_header_post_upload_length_large_failure",
+		.callback = test_header_post_upload_length_large_failure,
+	},
+	{
+		.name = "test_header_post_upload_length_zero_failure",
+		.callback = test_header_post_upload_length_zero_failure,
+	},
+	{
+		.name = "test_header_post_upload_checksum_large_failure",
+		.callback = test_header_post_upload_checksum_large_failure,
+	},
+	{
+		.name = "test_header_post_upload_checksum_zero_failure",
+		.callback = test_header_post_upload_checksum_zero_failure,
+	},
+	{
+		.name = "test_header_post_upload_checksum_different_failure",
+		.callback = test_header_post_upload_checksum_different_failure,
+	},
+	{
+		.name = "test_header_patch_content_length_zero_failure",
+		.callback = test_header_patch_content_length_zero_failure,
+	},
+	{
+		.name = "test_header_patch_content_length_different_body_failure",
+		.callback =
+			test_header_patch_content_length_different_body_failure,
+	},
+	{
+		.name = "test_header_patch_content_length_large_failure",
+		.callback = test_header_patch_content_length_large_failure,
+	},
+	{
+		.name = "test_header_patch_tus_resumable_different_failure",
+		.callback = test_header_patch_tus_resumable_different_failure,
+	},
+	{
+		.name = "test_image_patch_non_existent_failure",
+		.callback = test_image_patch_non_existent_failure,
 	}
 };
 
