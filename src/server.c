@@ -23,9 +23,7 @@ void cleanup_expired_uploads(size_t n) {
 		time_t upload_time = timegm(&tm_time);
 
 		// Se expirou
-		if ((now - upload_time) > EXPIRATION_SECONDS &&
-		    tus_uploads[i].upload_offset !=
-			    tus_uploads[i].upload_length) {
+		if ((now - upload_time) > EXPIRATION_SECONDS) {
 			// Remove arquivo usando remove()
 			if (tus_uploads[i].url_image[0] != '\0') {
 				if (remove(tus_uploads[i].url_image) == 0) {
