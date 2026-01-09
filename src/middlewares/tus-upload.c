@@ -1,8 +1,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h> /* memcpy, strlen etc. */
-#include <openssl/evp.h> /* SHA1*/
-#include <openssl/sha.h> /* EVP_EncodeBlock (Base64) */
+#include <openssl/sha.h> /* SHA1*/
+#include <openssl/evp.h> /* EVP_EncodeBlock (Base64) */
 #include "tus-upload.h"
 #include "blake3.h"
 #include "mongoose.h"
@@ -79,40 +79,49 @@ bool base64_to_base58(const char *b64, char *b58, size_t b58_size) {
 	return true;
 }
 
-bool build_image_path(char *filename, char *image_path, size_t image_len) {
-	const char *prefix = "./tmp/";
-	const char *suffix = ".jpg";
-	size_t prefix_len = strlen(prefix);
-	size_t suffix_len = strlen(suffix);
-	size_t filename_len = strlen(filename);
+bool build_image_path(char *filename, const char *output_dir, char *image_path,
+		      size_t image_len) {
+	char prefix[1024] = { 0 };
+	const char *suffix = ".jpeg";
+	size_t prefix_len = strnlen(prefix, 1024);
+	size_t suffix_len = strnlen(suffix, 6);
+	size_t filename_len = strnlen(filename, 65);
 	size_t pos, remaining;
 
+	if (!filename || !image_path || image_len <= 0)
+		return false;
+
+	if (snprintf(prefix, sizeof(prefix), "%s/", output_dir) >=
+	    (int)sizeof(prefix)) {
+		return false;
+	}
+
+	prefix_len = strnlen(prefix, 1024);
 	// Limpa o buffer
 	memset(image_path, 0, image_len);
-	if (prefix_len > IMAGE_PATH_SIZE - 1) {
+	if (prefix_len > image_len - 1) {
 		return false; // não cabe, aborta
 	}
 
-	strncpy(image_path, prefix, prefix_len);
+	memcpy(image_path, prefix, prefix_len);
 	image_path[prefix_len] = '\0';
 	pos = prefix_len;
-	remaining = IMAGE_PATH_SIZE - 1 - pos;
+	remaining = image_len - 1 - pos;
 	if (filename_len > remaining) {
 		return false;
 	}
 
-	strncpy(image_path + pos, filename, filename_len);
+	memcpy(image_path + pos, filename, filename_len);
 	pos += filename_len;
 	image_path[pos] = '\0';
-	remaining = IMAGE_PATH_SIZE - 1 - pos;
+	remaining = image_len - 1 - pos;
 	if (suffix_len > remaining) {
 		return false;
 	}
 
-	strncpy(image_path + pos, suffix, suffix_len);
+	memcpy(image_path + pos, suffix, suffix_len);
 	pos += suffix_len;
 	image_path[pos] = '\0';
-
 	return true;
 }
 
@@ -175,8 +184,8 @@ void middlewares_tus_post(struct mg_connection *c, struct mg_http_message *hm,
 		return;
 	}
 
-	if (!build_image_path(b58, image_path, sizeof(image_path))) {
-		mg_http_reply(c, 400, DEFAULT_HEADERS,
+	if (!build_image_path(b58, "./tmp", image_path, sizeof(image_path))) {
+		mg_http_reply(c, 500, DEFAULT_HEADERS,
 			      "Nome do arquivo muito grande");
 		return;
 	}
@@ -341,7 +350,12 @@ void middlewares_tus_patch(struct mg_connection *c, struct mg_http_message *hm,
 		return;
 	}
 
-	snprintf(image_url, sizeof(image_url), "./tmp/%s.jpg", file_id);
+	if (snprintf(image_url, sizeof(image_url), "./tmp/%s.jpeg", file_id) >=
+	    (int)sizeof(image_url)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
+		return;
+	}
+
 	for (size_t j = 0; j < *n_up; j++) {
 		if (strcmp(image_url, up[j].url_image) == 0 && up[j].occupied) {
 			i = j;
@@ -446,7 +460,11 @@ void middlewares_tus_head(struct mg_connection *c, struct mg_http_message *hm,
 		return;
 	}
 
-	snprintf(image_url, sizeof(image_url), "./tmp/%s.jpg", file_id);
+	if (snprintf(image_url, sizeof(image_url), "./tmp/%s.jpeg", file_id) >=
+	    (int)sizeof(image_url)) {
+		mg_http_reply(c, 400, DEFAULT_HEADERS, "URL muito grande");
+		return;
+	}
 
 	for (size_t j = 0; j < *n_up; j++) {
 		if (strcmp(image_url, up[j].url_image) == 0 && up[j].occupied) {

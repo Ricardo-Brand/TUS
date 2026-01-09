@@ -3,7 +3,7 @@
 #include "tus-upload.h"
 #include <unistd.h>
 
-#define EXPIRATION_SECONDS 1 // 1 segundos
+#define EXPIRATION_SECONDS 60 // 1 segundos
 static ArrayTus tus_uploads[10];
 
 void cleanup_expired_uploads(size_t n) {
